@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import requests
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
@@ -5,7 +7,7 @@ BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 # Get resolved events
 params = {
     "status": "settled",
-    "limit": 200,
+    "limit": 50,
 }
 response = requests.get(f"{BASE_URL}/events", params=params)
 events_data = response.json()
@@ -13,6 +15,7 @@ events_data = response.json()
 # print(events_data)
 
 upsets = []
+print(events_data)
 
 for event in events_data.get("events", []):
     event_ticker = event["event_ticker"]
@@ -20,35 +23,59 @@ for event in events_data.get("events", []):
     # Get markets for this event
     markets_resp = requests.get(f"{BASE_URL}/markets", params={"event_ticker": event_ticker})
     markets = markets_resp.json().get("markets", [])
-    print(markets)
 
     for market in markets:
-        # result = "yes" or "no", yes_price was the probability of yes happening
         result = market.get("result")
-        last_price = market.get("last_price")  # last traded price (0-100 cents)
+        close_time = market.get("close_time")  # ISO timestamp
 
-        if result and last_price is not None:
-            # If "yes" won but yes_price was low, or "no" won but yes_price was high
-            if result == "yes" and last_price < 50:
-                upsets.append(
-                    {
-                        "title": market["title"],
-                        "ticker": market["ticker"],
-                        "result": result,
-                        "last_price_before": last_price,
-                        "subtitle": market.get("subtitle", ""),
-                    }
-                )
-            elif result == "no" and last_price > 50:
-                upsets.append(
-                    {
-                        "title": market["title"],
-                        "ticker": market["ticker"],
-                        "result": result,
-                        "last_price_before": last_price,
-                        "subtitle": market.get("subtitle", ""),
-                    }
-                )
+        if result and close_time:
+            # Parse close time and get 1 hour before
+            close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+            one_hour_before = close_dt - timedelta(hours=1)
+
+            # Get candlesticks around that time
+            series_ticker = market.get("series_ticker")
+            print(series_ticker)
+            candles_resp = requests.get(
+                f"{BASE_URL}/series/{series_ticker}/markets/{market['ticker']}/candlesticks",
+                params={
+                    "start_ts": int(one_hour_before.timestamp()),
+                    "end_ts": int(close_dt.timestamp()),
+                    "period_interval": 1,  # 60-minute candles
+                },
+            )
+            print(f"URL: {candles_resp.url}")
+            print(f"Status: {candles_resp.status_code}")
+            print(f"Response: {candles_resp.text[:500]}")
+            candles = candles_resp.json().get("candlesticks", [])
+
+            if candles:
+                # Use the first candle's open price (price ~1 hour before close)
+                price_before_close = candles[0].get("price", {}).get("open")
+            else:
+                price_before_close = None
+
+            if price_before_close is not None:
+                if result == "yes" and price_before_close < 80:
+                    upsets.append(
+                        {
+                            "title": market["title"],
+                            "ticker": market["ticker"],
+                            "result": result,
+                            "last_price_before": price_before_close,
+                            "subtitle": market.get("subtitle", ""),
+                        }
+                    )
+                elif result == "no" and price_before_close > 20:
+                    upsets.append(
+                        {
+                            "title": market["title"],
+                            "ticker": market["ticker"],
+                            "result": result,
+                            "last_price_before": price_before_close,
+                            "subtitle": market.get("subtitle", ""),
+                        }
+                    )
 
 # Sort by how unlikely the outcome was
 upsets.sort(
