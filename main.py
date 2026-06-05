@@ -7,7 +7,7 @@ BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 # Get resolved events
 params = {
     "status": "settled",
-    "limit": 50,
+    "limit": 5,
 }
 response = requests.get(f"{BASE_URL}/events", params=params)
 events_data = response.json()
@@ -23,6 +23,8 @@ for event in events_data.get("events", []):
     # Get markets for this event
     markets_resp = requests.get(f"{BASE_URL}/markets", params={"event_ticker": event_ticker})
     markets = markets_resp.json().get("markets", [])
+    if not markets:
+        continue
 
     for market in markets:
         result = market.get("result")
@@ -51,7 +53,10 @@ for event in events_data.get("events", []):
 
             if candles:
                 # Use the first candle's open price (price ~1 hour before close)
-                price_before_close = candles[0].get("price", {}).get("open")
+                price_before_close = (
+                    float(candles[0]["yes_bid"]["close_dollars"])
+                    + float(candles[0]["yes_ask"]["close_dollars"])
+                ) / 2
             else:
                 price_before_close = None
 

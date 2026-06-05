@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import requests
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
@@ -641,13 +643,78 @@ events_data = {
     ],
     "milestones": [],
 }
-
+upsets = []
 for event in events_data.get("events", []):
     event_ticker = event["event_ticker"]
-    print(event_ticker)
-
+    series_ticker = event["series_ticker"]
     markets_resp = requests.get(f"{BASE_URL}/markets", params={"event_ticker": event_ticker})
-    print(f"Status: {markets_resp.status_code}")
-    print(f"Response: {markets_resp.text[:1000]}")
     markets = markets_resp.json().get("markets", [])
-    print(markets)
+
+    if not markets:
+        continue
+    for market in markets:
+        result = market.get("result")
+        print(result)
+        close_time = market.get("close_time")
+        close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+        one_hour_before = close_dt - timedelta(hours=1)
+
+        # print(f"Status: {markets_resp.status_code}")
+        # print(f"Response: {markets_resp.text[:1000]}")
+
+        # print(market)
+
+        candles_resp = requests.get(
+            f"{BASE_URL}/series/{series_ticker}/markets/{market['ticker']}/candlesticks",
+            params={
+                "start_ts": int(one_hour_before.timestamp()),
+                "end_ts": int(close_dt.timestamp()),
+                "period_interval": 1,  # 60-minute candles
+            },
+        )
+
+        candles = candles_resp.json().get("candlesticks", [])
+        if not candles:
+            continue
+
+        price_before_close = (
+            float(candles[0]["yes_bid"]["close_dollars"])
+            + float(candles[0]["yes_ask"]["close_dollars"])
+        ) / 2
+
+        if price_before_close is not None:
+            if result == "yes" and price_before_close < 0.50:  # was < 80
+                upsets.append(
+                    {
+                        "title": market["title"],
+                        "ticker": market["ticker"],
+                        "result": result,
+                        "last_price_before": price_before_close,
+                        "subtitle": market.get("subtitle", ""),
+                    }
+                )
+            elif result == "no" and price_before_close > 0.50:  # was > 20
+                upsets.append(
+                    {
+                        "title": market["title"],
+                        "ticker": market["ticker"],
+                        "result": result,
+                        "last_price_before": price_before_close,
+                        "subtitle": market.get("subtitle", ""),
+                    }
+                )
+# Sort by how unlikely the outcome was
+upsets.sort(
+    key=lambda x: x["last_price_before"] if x["result"] == "yes" else 100 - x["last_price_before"]
+)
+
+print(f"Found {len(upsets)} upsets:\n")
+# Also fix the display:
+for u in upsets[:20]:
+    if u["result"] == "yes":
+        prob = u["last_price_before"] * 100
+    else:
+        prob = (1 - u["last_price_before"]) * 100
+    print(f"  {u['title']}")
+    print(f"    Result: {u['result']} | Implied probability was ~{prob:.1f}%")
+    print()
